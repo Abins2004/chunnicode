@@ -1,23 +1,122 @@
-import React from 'react';
+import React, { useState, useEffect } from 'react';
 import { useAuth } from '../../contexts/AuthContext';
 import { AccessibleButton } from '../ui/AccessibleButton';
 import { AccessibleCard } from '../ui/AccessibleCard';
 import { Users, BarChart, Calendar, FileText, LogOut, TrendingUp } from 'lucide-react';
+import { supabase } from '../../lib/supabase';
+import type { User, Task, Log } from '../../types';
+
+interface Patient extends User {
+  progress: number;
+  recentLogs: Log[];
+  completedTasks: number;
+  totalTasks: number;
+}
 
 export function TherapistDashboard() {
   const { user, signOut } = useAuth();
+  const [patients, setPatients] = useState<Patient[]>([]);
+  const [loading, setLoading] = useState(true);
 
-  const patients = [
-    { name: 'John Doe', progress: 85, nextSession: 'Tomorrow 2:00 PM', notes: 'Excellent progress on motor skills' },
-    { name: 'Jane Smith', progress: 72, nextSession: 'Friday 10:00 AM', notes: 'Working on communication goals' },
-    { name: 'Mike Johnson', progress: 90, nextSession: 'Monday 3:00 PM', notes: 'Ready for advanced exercises' },
-  ];
+  useEffect(() => {
+    if (user) {
+      fetchPatients();
+    }
+  }, [user]);
 
-  const todaysSessions = [
-    { time: '9:00 AM', patient: 'Sarah Wilson', type: 'Physical Therapy' },
-    { time: '11:00 AM', patient: 'Tom Brown', type: 'Speech Therapy' },
-    { time: '2:00 PM', patient: 'Lisa Davis', type: 'Occupational Therapy' },
-  ];
+  const fetchPatients = async () => {
+    if (!user) return;
+
+    try {
+      // Fetch users with role 'user' (patients)
+      const { data: usersData, error: usersError } = await supabase
+        .from('users')
+        .select('*')
+        .eq('role', 'user')
+        .order('name');
+
+      if (usersError) throw usersError;
+
+      // For each patient, calculate progress and fetch recent data
+      const patientsWithProgress = await Promise.all(
+        (usersData || []).map(async (patient) => {
+          const today = new Date().toISOString().split('T')[0];
+          const weekAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
+
+          // Fetch recent logs for progress calculation
+          const { data: logsData } = await supabase
+            .from('logs')
+            .select('*')
+            .eq('user_id', patient.id)
+            .gte('date', weekAgo)
+            .order('date', { ascending: false });
+
+          // Fetch today's tasks
+          const { data: tasksData } = await supabase
+            .from('tasks')
+            .select('*')
+            .eq('user_id', patient.id)
+            .eq('date', today);
+
+          const tasks = tasksData || [];
+          const completedTasks = tasks.filter(t => t.completed).length;
+          
+          // Calculate progress based on task completion and mood trends
+          const logs = logsData || [];
+          const avgMood = logs.length > 0 
+            ? logs.reduce((sum, log) => sum + (log.mood || 0), 0) / logs.length 
+            : 0;
+          
+          const taskCompletionRate = tasks.length > 0 ? (completedTasks / tasks.length) * 100 : 0;
+          const moodScore = (avgMood / 5) * 100;
+          const progress = Math.round((taskCompletionRate + moodScore) / 2);
+
+          return {
+            ...patient,
+            progress,
+            recentLogs: logs.slice(0, 5),
+            completedTasks,
+            totalTasks: tasks.length
+          };
+        })
+      );
+
+      setPatients(patientsWithProgress);
+    } catch (error) {
+      console.error('Error fetching patients:', error);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const getProgressColor = (progress: number) => {
+    if (progress >= 80) return 'text-green-600';
+    if (progress >= 60) return 'text-yellow-600';
+    return 'text-red-600';
+  };
+
+  const getProgressBgColor = (progress: number) => {
+    if (progress >= 80) return 'bg-green-600';
+    if (progress >= 60) return 'bg-yellow-600';
+    return 'bg-red-600';
+  };
+
+  if (loading) {
+    return (
+      <div className="min-h-screen bg-gray-50 flex items-center justify-center">
+        <div className="text-center">
+          <div className="animate-spin rounded-full h-32 w-32 border-b-2 border-blue-600 mx-auto mb-4"></div>
+          <p className="text-xl text-gray-600">Loading dashboard...</p>
+        </div>
+      </div>
+    );
+  }
+
+  const avgProgress = patients.length > 0 
+    ? Math.round(patients.reduce((sum, p) => sum + p.progress, 0) / patients.length)
+    : 0;
+
+  const totalTasksToday = patients.reduce((sum, p) => sum + p.totalTasks, 0);
 
   return (
     <div className="min-h-screen bg-gray-50 p-6">
@@ -46,66 +145,69 @@ export function TherapistDashboard() {
 
           <AccessibleCard className="p-6 text-center">
             <Calendar size={32} className="mx-auto mb-3 text-green-500" />
-            <h3 className="font-semibold">Today's Sessions</h3>
-            <p className="text-2xl font-bold text-green-600">{todaysSessions.length}</p>
+            <h3 className="font-semibold">Today's Tasks</h3>
+            <p className="text-2xl font-bold text-green-600">{totalTasksToday}</p>
           </AccessibleCard>
 
           <AccessibleCard className="p-6 text-center">
             <TrendingUp size={32} className="mx-auto mb-3 text-purple-500" />
             <h3 className="font-semibold">Avg Progress</h3>
-            <p className="text-2xl font-bold text-purple-600">82%</p>
+            <p className={`text-2xl font-bold ${getProgressColor(avgProgress)}`}>{avgProgress}%</p>
           </AccessibleCard>
 
           <AccessibleCard className="p-6 text-center">
             <FileText size={32} className="mx-auto mb-3 text-orange-500" />
-            <h3 className="font-semibold">Reports Due</h3>
-            <p className="text-2xl font-bold text-orange-600">5</p>
+            <h3 className="font-semibold">Active Patients</h3>
+            <p className="text-2xl font-bold text-orange-600">{patients.length}</p>
           </AccessibleCard>
         </div>
 
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
+        <div className="grid grid-cols-1 lg:grid-cols-1 gap-8">
           {/* Patient Progress */}
           <AccessibleCard className="p-6">
             <h2 className="text-2xl font-semibold mb-6">Patient Progress</h2>
-            <div className="space-y-4">
-              {patients.map((patient, index) => (
-                <div key={index} className="p-4 bg-gray-50 rounded-lg">
-                  <div className="flex justify-between items-start mb-3">
-                    <h3 className="font-semibold text-lg">{patient.name}</h3>
-                    <span className="text-sm text-gray-500">{patient.progress}% complete</span>
+            {patients.length === 0 ? (
+              <div className="text-center py-8 text-gray-500">
+                <Users size={48} className="mx-auto mb-4" />
+                <p className="text-xl">No patients found</p>
+              </div>
+            ) : (
+              <div className="space-y-4">
+                {patients.map((patient) => (
+                  <div key={patient.id} className="p-4 bg-gray-50 rounded-lg">
+                    <div className="flex justify-between items-start mb-3">
+                      <div>
+                        <h3 className="font-semibold text-lg">{patient.name}</h3>
+                        <p className="text-sm text-gray-600">
+                          {patient.disability_type && 
+                            `${patient.disability_type.charAt(0).toUpperCase() + patient.disability_type.slice(1)} support`
+                          }
+                        </p>
+                      </div>
+                      <span className={`text-sm font-semibold ${getProgressColor(patient.progress)}`}>
+                        {patient.progress}% progress
+                      </span>
+                    </div>
+                    <div className="w-full bg-gray-200 rounded-full h-2 mb-3">
+                      <div 
+                        className={`h-2 rounded-full ${getProgressBgColor(patient.progress)}`}
+                        style={{ width: `${patient.progress}%` }}
+                      ></div>
+                    </div>
+                    <div className="flex justify-between items-center text-sm text-gray-600">
+                      <span>Tasks: {patient.completedTasks}/{patient.totalTasks} completed today</span>
+                      <span>
+                        Recent mood: {
+                          patient.recentLogs[0]?.mood 
+                            ? `${patient.recentLogs[0].mood}/5` 
+                            : 'Not logged'
+                        }
+                      </span>
+                    </div>
                   </div>
-                  <div className="w-full bg-gray-200 rounded-full h-2 mb-3">
-                    <div 
-                      className="bg-blue-600 h-2 rounded-full" 
-                      style={{ width: `${patient.progress}%` }}
-                    ></div>
-                  </div>
-                  <p className="text-sm text-gray-600 mb-2">{patient.notes}</p>
-                  <p className="text-xs text-gray-500">Next: {patient.nextSession}</p>
-                </div>
-              ))}
-            </div>
-          </AccessibleCard>
-
-          {/* Today's Schedule */}
-          <AccessibleCard className="p-6">
-            <h2 className="text-2xl font-semibold mb-6">Today's Schedule</h2>
-            <div className="space-y-4">
-              {todaysSessions.map((session, index) => (
-                <div key={index} className="flex items-center gap-4 p-4 bg-gray-50 rounded-lg">
-                  <div className="text-center">
-                    <div className="font-semibold text-blue-600">{session.time}</div>
-                  </div>
-                  <div className="flex-1">
-                    <h3 className="font-semibold">{session.patient}</h3>
-                    <p className="text-gray-600">{session.type}</p>
-                  </div>
-                  <AccessibleButton variant="secondary" size="sm">
-                    View Details
-                  </AccessibleButton>
-                </div>
-              ))}
-            </div>
+                ))}
+              </div>
+            )}
           </AccessibleCard>
         </div>
 

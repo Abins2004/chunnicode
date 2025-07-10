@@ -1,36 +1,67 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
+import { useAuth } from '../../contexts/AuthContext';
 import { useAccessibility } from '../../contexts/AccessibilityContext';
 import { AccessibleButton } from '../ui/AccessibleButton';
 import { AccessibleCard } from '../ui/AccessibleCard';
 import { Calendar, Clock, CheckCircle, Circle, Volume2 } from 'lucide-react';
-
-interface Task {
-  id: string;
-  description: string;
-  time: string;
-  icon: string;
-  completed: boolean;
-}
-
-const mockTasks: Task[] = [
-  { id: '1', description: 'Take morning medication', time: '9:00 AM', icon: '💊', completed: false },
-  { id: '2', description: 'Eat breakfast', time: '9:30 AM', icon: '🍳', completed: false },
-  { id: '3', description: 'Brush teeth', time: '10:00 AM', icon: '🦷', completed: false },
-  { id: '4', description: 'Exercise for 15 minutes', time: '2:00 PM', icon: '🏃', completed: false },
-];
+import { supabase } from '../../lib/supabase';
+import type { Task } from '../../types';
 
 export function CognitiveInterface() {
-  const [tasks, setTasks] = useState(mockTasks);
+  const [tasks, setTasks] = useState<Task[]>([]);
   const [currentTaskIndex, setCurrentTaskIndex] = useState(0);
+  const [loading, setLoading] = useState(true);
   const { speak } = useAccessibility();
+  const { user } = useAuth();
 
-  const currentTask = tasks[currentTaskIndex];
+  useEffect(() => {
+    if (user) {
+      fetchTasks();
+    }
+  }, [user]);
 
-  const toggleTask = (taskId: string) => {
-    setTasks(prev => prev.map(task => 
-      task.id === taskId ? { ...task, completed: !task.completed } : task
-    ));
-    speak(`Task ${currentTask.completed ? 'unmarked' : 'completed'}`);
+  const fetchTasks = async () => {
+    if (!user) return;
+
+    try {
+      const today = new Date().toISOString().split('T')[0];
+      const { data, error } = await supabase
+        .from('tasks')
+        .select('*')
+        .eq('user_id', user.id)
+        .eq('date', today)
+        .order('time', { ascending: true });
+
+      if (error) throw error;
+      setTasks(data || []);
+    } catch (error) {
+      console.error('Error fetching tasks:', error);
+      speak('Error loading tasks');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const toggleTask = async (taskId: string) => {
+    const task = tasks.find(t => t.id === taskId);
+    if (!task) return;
+
+    try {
+      const { error } = await supabase
+        .from('tasks')
+        .update({ completed: !task.completed })
+        .eq('id', taskId);
+
+      if (error) throw error;
+
+      setTasks(prev => prev.map(t => 
+        t.id === taskId ? { ...t, completed: !t.completed } : t
+      ));
+      speak(`Task ${task.completed ? 'unmarked' : 'completed'}`);
+    } catch (error) {
+      console.error('Error updating task:', error);
+      speak('Error updating task');
+    }
   };
 
   const nextTask = () => {
@@ -48,8 +79,32 @@ export function CognitiveInterface() {
   };
 
   const speakTask = () => {
-    speak(`Current task: ${currentTask.description} at ${currentTask.time}`);
+    const currentTask = tasks[currentTaskIndex];
+    if (currentTask) {
+      speak(`Current task: ${currentTask.description} at ${currentTask.time}`);
+    }
   };
+
+  if (loading) {
+    return (
+      <div className="text-center py-12">
+        <div className="animate-spin rounded-full h-32 w-32 border-b-2 border-blue-600 mx-auto mb-4"></div>
+        <p className="text-xl text-gray-600">Loading your tasks...</p>
+      </div>
+    );
+  }
+
+  if (tasks.length === 0) {
+    return (
+      <div className="text-center py-12">
+        <div className="text-8xl mb-4">📝</div>
+        <h2 className="text-3xl font-bold text-gray-900 mb-4">No tasks for today</h2>
+        <p className="text-xl text-gray-600">Your schedule is clear!</p>
+      </div>
+    );
+  }
+
+  const currentTask = tasks[currentTaskIndex];
 
   return (
     <div className="space-y-8">
@@ -128,6 +183,9 @@ export function CognitiveInterface() {
               aria-label={`Task ${index + 1}: ${task.completed ? 'completed' : index === currentTaskIndex ? 'current' : 'pending'}`}
             />
           ))}
+        </div>
+        <div className="text-center mt-4 text-gray-600">
+          {tasks.filter(t => t.completed).length} of {tasks.length} tasks completed
         </div>
       </AccessibleCard>
     </div>
